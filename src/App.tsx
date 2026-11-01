@@ -38,11 +38,16 @@ import { DashboardView } from './components/DashboardView';
 import { DataTable } from './components/DataTable';
 import {
   Activity,
+  AlertTriangle,
+  CheckCircle,
   Database,
+  Info,
   LayoutDashboard,
   Network,
   Sparkles,
+  X,
 } from 'lucide-react';
+import { parseUploadedFile } from './utils/fileParser';
 
 const INITIAL_AGENTS_CONFIG: Record<string, AgentState> = {
   agent4_plan: {
@@ -182,6 +187,34 @@ export default function App() {
   const [stepLabel, setStepLabel] = useState<string>('');
   const [selectedAgentModalId, setSelectedAgentModalId] = useState<string | null>(null);
 
+  // In-app notifications and Vercel/Server environment health
+  const [notification, setNotification] = useState<{
+    type: 'success' | 'warning' | 'error' | 'info';
+    message: string;
+    details?: string;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (!data?.hasKey) {
+          setNotification({
+            type: 'warning',
+            message: 'GEMINI_API_KEY is not configured in this environment',
+            details:
+              'If you deployed on Vercel: Open Vercel Dashboard -> Project Settings -> Environment Variables, add GEMINI_API_KEY, and Redeploy.',
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('API health check error:', err);
+      });
+  }, []);
+
   // Computed dataset numbers via pure JavaScript
   const activeRecords = useMemo(() => {
     return records.filter((r) => selectedRecordIds.has(r.Record_ID));
@@ -223,47 +256,39 @@ export default function App() {
     });
   }, [records]);
 
-  // CSV Upload handler
-  const handleUploadCSV = (file: File) => {
-    Papa.parse<any>(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        if (!results.data || results.data.length === 0) {
-          alert('CSV file appears to be empty.');
-          return;
-        }
+  // Universal File Upload handler (CSV, TSV, TXT, JSON)
+  const handleUploadCSV = async (file: File) => {
+    try {
+      const res = await parseUploadedFile(file);
+      if (!res.success || res.records.length === 0) {
+        setNotification({
+          type: 'error',
+          message: `Could not parse ${file.name}`,
+          details: res.message,
+        });
+        return;
+      }
 
-        const parsed: PatientRecord[] = results.data.map((row, idx) => ({
-          Record_ID: row.Record_ID || row.ID || row.id || `REC-${idx + 100}`,
-          Patient_Persona: row.Patient_Persona || row.Persona || 'General Patient',
-          Age_Group: row.Age_Group || row.Age || 'Unknown',
-          Visit_Type: row.Visit_Type || 'Inpatient',
-          Service_Line: row.Service_Line || row.Department || 'General Medicine',
-          Year: Number(row.Year) || 2025,
-          Patient_Satisfaction: Number(row.Patient_Satisfaction) || 5,
-          Communication_Rating: Number(row.Communication_Rating) || 5,
-          Followup_Compliance: Number(row.Followup_Compliance) === 1 ? 1 : 0,
-          Portal_Usage: Number(row.Portal_Usage) === 1 ? 1 : 0,
-          Readmission_Risk: (['Low', 'Medium', 'High'].includes(row.Readmission_Risk)
-            ? row.Readmission_Risk
-            : 'Medium') as any,
-          AI_Risk_Flag: (['None', 'Moderate', 'High', 'Critical'].includes(row.AI_Risk_Flag)
-            ? row.AI_Risk_Flag
-            : 'None') as any,
-          Comment: row.Comment || row.Feedback || 'No comment provided',
-        }));
+      setRecords(res.records);
+      setSelectedRecordIds(new Set(res.records.map((r) => r.Record_ID)));
+      setAgents(INITIAL_AGENTS_CONFIG);
+      setActiveStep(null);
+      setWaitingForApproval(false);
 
-        setRecords(parsed);
-        setSelectedRecordIds(new Set(parsed.map((r) => r.Record_ID)));
-        setAgents(INITIAL_AGENTS_CONFIG);
-        setActiveStep(null);
-        setWaitingForApproval(false);
-      },
-      error: (err) => {
-        alert(`Failed to parse CSV: ${err.message}`);
-      },
-    });
+      setNotification({
+        type: 'success',
+        message: `Successfully loaded ${res.records.length} records from ${file.name}`,
+        details: `Detected columns: ${res.detectedColumns.slice(0, 6).join(', ')}${
+          res.detectedColumns.length > 6 ? '...' : ''
+        }`,
+      });
+    } catch (err: any) {
+      setNotification({
+        type: 'error',
+        message: `Error reading file ${file.name}`,
+        details: err?.message || 'Unknown parsing error',
+      });
+    }
   };
 
   const handleLoadSampleData = () => {
@@ -272,6 +297,11 @@ export default function App() {
     setAgents(INITIAL_AGENTS_CONFIG);
     setActiveStep(null);
     setWaitingForApproval(false);
+    setNotification({
+      type: 'info',
+      message: 'Loaded standard 60-patient benchmark dataset',
+      details: '8 distinct recurring comment themes across 4 hospital departments.',
+    });
   };
 
   const handleDownloadCSV = () => {
@@ -610,7 +640,11 @@ export default function App() {
   // Full workflow trigger
   const handleRunWorkflow = async () => {
     if (activeRecords.length === 0) {
-      alert('Please select at least one record from the dataset to analyze.');
+      setNotification({
+        type: 'warning',
+        message: 'No patient records selected',
+        details: 'Please select at least one record from the dataset table to analyze.',
+      });
       return;
     }
 
@@ -639,6 +673,24 @@ export default function App() {
     } catch (err: any) {
       console.error('Workflow execution error:', err);
       setIsRunning(false);
+
+      const errMsg = err?.message || 'Execution error';
+      const isApiKeyIssue = errMsg.includes('GEMINI_API_KEY') || errMsg.includes('API key');
+      const isHtmlResponse = errMsg.includes('Unexpected token') || errMsg.includes('JSON');
+
+      setNotification({
+        type: 'error',
+        message: isApiKeyIssue
+          ? 'Missing GEMINI_API_KEY on Vercel'
+          : isHtmlResponse
+          ? 'API Route Configuration Error'
+          : 'Workflow Execution Failed',
+        details: isApiKeyIssue
+          ? 'Vercel requires the GEMINI_API_KEY environment variable. Open Vercel Dashboard -> Project Settings -> Environment Variables, add GEMINI_API_KEY, and Redeploy.'
+          : isHtmlResponse
+          ? 'The serverless API route did not return JSON. Ensure vercel.json and the /api directory are included in your GitHub repository.'
+          : errMsg,
+      });
     }
   };
 
@@ -829,6 +881,54 @@ export default function App() {
 
       {/* MAIN CONTAINER */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6 flex-1 w-full">
+        {/* IN-APP NOTIFICATION & VERCEL TROUBLESHOOTING BANNER */}
+        {notification && (
+          <div
+            className={`p-4 rounded-2xl border flex items-start justify-between gap-3 shadow-md transition-all ${
+              notification.type === 'error'
+                ? 'bg-rose-50 dark:bg-rose-950/80 border-rose-300 dark:border-rose-800 text-rose-900 dark:text-rose-100'
+                : notification.type === 'warning'
+                ? 'bg-amber-50 dark:bg-amber-950/80 border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-100'
+                : notification.type === 'success'
+                ? 'bg-emerald-50 dark:bg-emerald-950/80 border-emerald-300 dark:border-emerald-800 text-emerald-900 dark:text-emerald-100'
+                : 'bg-indigo-50 dark:bg-indigo-950/80 border-indigo-300 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100'
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5">
+                {notification.type === 'error' && (
+                  <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400 shrink-0" />
+                )}
+                {notification.type === 'warning' && (
+                  <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0" />
+                )}
+                {notification.type === 'success' && (
+                  <CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                )}
+                {notification.type === 'info' && (
+                  <Info className="w-5 h-5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                )}
+              </div>
+              <div>
+                <h4 className="text-sm font-black tracking-tight">{notification.message}</h4>
+                {notification.details && (
+                  <p className="text-xs mt-1 font-medium opacity-90 leading-relaxed">
+                    {notification.details}
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setNotification(null)}
+              className="p-1 rounded-lg hover:bg-black/10 dark:hover:bg-white/10 text-current transition-colors cursor-pointer shrink-0"
+              title="Dismiss notification"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {/* MANAGER INQUIRY BAR */}
         <ManagerQuestionBar
           question={managerQuestion}

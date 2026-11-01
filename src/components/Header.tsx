@@ -116,7 +116,7 @@ export const Header: React.FC<HeaderProps> = ({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".csv"
+              accept=".csv,.tsv,.txt,.json"
               onChange={handleFileChange}
               className="hidden"
             />
@@ -125,10 +125,10 @@ export const Header: React.FC<HeaderProps> = ({
               disabled={isRunning}
               onClick={() => fileInputRef.current?.click()}
               className="p-2 sm:px-2.5 sm:py-1.5 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-slate-200 dark:border-slate-700 cursor-pointer shadow-2xs"
-              title="Upload custom CSV dataset"
+              title="Upload custom dataset (CSV, TSV, TXT, or JSON)"
             >
               <Upload className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
-              <span className="hidden sm:inline">Upload CSV</span>
+              <span className="hidden sm:inline">Upload File</span>
             </button>
 
             <button
